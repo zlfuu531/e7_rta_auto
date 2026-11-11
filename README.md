@@ -1,3 +1,59 @@
+# 第七史诗电脑版 RTA — Windows 适配版
+
+基于 [faifan/e7_rta_auto](https://github.com/faifan/e7_rta_auto) 的个人 fork，保留原作者署名及 [CC BY-NC-SA 4.0 许可证](LICENSE)。此版增加原生 PC 客户端窗口适配、混合 DPI 多屏截图与点击、按屏幕可用区域缩放、F8 停止和可迁移安装入口。选秀模型及战斗策略沿用上游。
+
+## 换电脑快速开始
+
+1. 下载本仓库 ZIP 并完整解压，或 `git clone https://github.com/zlfuu531/e7_rta_auto.git`。
+2. 安装 **Python 3.12（Windows x64）**，保留安装器的 Tcl/Tk 和 Python launcher 选项。已有该版本可跳过。
+3. 双击仓库根目录 **`setup.bat`**。安装器会在本目录创建 `.venv` 并安装依赖，不需要复制旧电脑的 Python 环境，也不需要 CUDA。
+4. 启动电脑版第七史诗，进入世界竞技场「排名战」大厅，再双击 **`start.bat`**，允许 Windows 管理员权限提示。
+5. 控制面板选择「PC客户端」、实际游戏窗口、简体/繁体语言；分辨率默认保留 **`1920x1080.json`**，点击「开始」。
+
+按 **F8** 或控制面板「停止」结束自动操作。运行期间保持游戏画面可见且无遮挡，避免同时操作鼠标键盘。游戏失去焦点时会阻止后续点击。
+
+## 不同分辨率和显示缩放
+
+- 识别和策略坐标统一使用所选 profile，默认 1920×1080；显示器不必设为这个分辨率。
+- 开始前会恢复最大化窗口，并根据游戏所在显示器的**可用区域**，留出标题栏、边框和任务栏的位置。能容纳时使用 1920×1080；放不下时自动缩小为相同宽高比的窗口。
+- 例如客户区可用空间为 1344×681 时，实际画面会选择 1200×675；截图再归一到 1920×1080，点击按实际窗口位置和比例转换。此例已通过自动测试，不代表在另一台电脑完成过实测。
+- 使用物理像素处理混合 DPI、150% 等显示缩放及主屏左侧的负坐标。无需把系统显示缩放改为 100%。
+- 默认继续使用 1920×1080 配置即可；手动改变窗口比例后应停止并重新开始。缩得越小，OCR 和模板匹配的细节损失越多，建议优先使用较大的可见窗口。
+
+## 安装与诊断
+
+安装脚本使用 PyPI 的已验证版本，默认在 Windows 上以 CPU 运行模型。`torchvision` 没有被项目导入，因此不作为必装依赖。若下载失败，修复网络后重跑 `setup.bat`，会复用已有环境。
+
+可在 PowerShell 中指定 Python 安装路径：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File tools\setup_pc.ps1 -PythonExe 'C:\Python312\python.exe'
+```
+
+仅验证 Python，不安装依赖：加 `-CheckOnly`。
+
+在管理员 PowerShell 中进行本机检查（只调整窗口及生成诊断，不发起匹配）：
+
+```powershell
+& .\.venv\Scripts\python.exe tools\check_pc.py --resize --model
+```
+
+诊断默认保存在仓库根目录 `diagnostics/`，包含截图和 `pc_check.json`。仅在 RTA 大厅手动添加 `--test-navigation` 时，才会验证「模拟战 → 排名战」页签点击。普通诊断不会点击游戏页签。
+
+运行日志为 `run.log`；启动异常为 `startup_error.log`。`.venv/`、诊断截图、日志和 `data/` 本地对局记录均不会提交到 GitHub。
+
+```powershell
+& .\.venv\Scripts\python.exe -m unittest discover -s tests -v
+```
+
+已在 Windows 11 原生 `EpicSeven.exe`、左侧副屏 150% 缩放下验证窗口调整、截图、RTA 大厅识别、模型推荐及页签点击。较小屏幕适配有自动测试；**另一台电脑、完整选秀、中文英雄搜索与完整对局仍需实际运行验证**。
+
+---
+
+## 上游原始说明
+
+以下是上游说明，其中模拟器、固定分辨率与旧 CUDA 安装步骤属于原版用法；电脑版优先使用上面的安装入口。
+
 # 第七史诗 全自动RTA（e7Rta_zd）
 
 基于 Transformer 模型 + 计算机视觉的《第七史诗》RTA（实时竞技）全自动化系统，可自动完成**预禁用 → 选秀 → 选秀后禁用 → 战斗**的完整流程，无需人工干预。

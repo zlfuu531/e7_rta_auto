@@ -9,7 +9,7 @@ import ctypes
 
 _ROOT = os.path.dirname(os.path.abspath(__file__))
 
-_DEFAULT_PROFILE = os.path.join(_ROOT, 'profiles', '1922x1115.json')
+_DEFAULT_PROFILE = os.path.join(_ROOT, 'profiles', '1920x1080.json')
 _DEFAULT_LANG    = os.path.join(_ROOT, 'lang', 'zh_cn.json')
 _DEFAULT_TITLE   = '第七史诗'
 
@@ -21,7 +21,7 @@ class _Cfg:
         self.window_title:  str  = _DEFAULT_TITLE
         self.profile_path:  str  = _DEFAULT_PROFILE
         self.lang_path:     str  = _DEFAULT_LANG
-        self.input_method:        str  = 'emulator'
+        self.input_method:        str  = 'pc'
         self.local_stats_enabled: bool = True
         self.adb_device:          str  = ''
         self.use_adbkeyboard:     bool = False
@@ -73,21 +73,17 @@ cfg = _Cfg()
 
 def list_windows() -> list:
     """返回当前桌面所有可见窗口标题列表（去重、去空）。"""
+    from battle_ai.windows import user32, ENUMPROC
     titles = []
-    EnumWindowsProc = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_int, ctypes.c_int)
-
-    def _cb(hwnd, _):
-        if ctypes.windll.user32.IsWindowVisible(hwnd):
-            length = ctypes.windll.user32.GetWindowTextLengthW(hwnd)
-            if length > 0:
-                buf = ctypes.create_unicode_buffer(length + 1)
-                ctypes.windll.user32.GetWindowTextW(hwnd, buf, length + 1)
-                t = buf.value.strip()
-                if t:
-                    titles.append(t)
+    def callback(hwnd, _):
+        if user32.IsWindowVisible(hwnd):
+            length = user32.GetWindowTextLengthW(hwnd)
+            buf = ctypes.create_unicode_buffer(length + 1)
+            user32.GetWindowTextW(hwnd, buf, length + 1)
+            if buf.value.strip():
+                titles.append(buf.value.strip())
         return True
-
-    ctypes.windll.user32.EnumWindows(EnumWindowsProc(_cb), 0)
+    user32.EnumWindows(ENUMPROC(callback), 0)
     return sorted(set(titles))
 
 

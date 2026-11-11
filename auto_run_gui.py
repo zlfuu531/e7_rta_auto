@@ -6,6 +6,7 @@ import os
 import sys
 import time
 import threading
+from battle_ai.windows import physical_pixels
 import tkinter as tk
 from tkinter import ttk, scrolledtext
 import queue
@@ -150,7 +151,9 @@ class AutoRunApp:
         self._last_enemy_finalban_code = None
 
         self._build_ui()
+        self.log('电脑版适配已就绪：物理像素坐标 / 左侧副屏截图 / F8停止', 'ok')
         self._poll_log()
+        self._poll_stop_hotkey()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
     # ── UI ───────────────────────────────────────────────────
@@ -192,7 +195,7 @@ class AutoRunApp:
 
         tk.Label(row2, text='分辨率:', font=CN_FONT,
                  fg='#c9d1d9', bg='#1e1e1e').pack(side=tk.LEFT)
-        self._profile_var = tk.StringVar(value='1922x1115.json')
+        self._profile_var = tk.StringVar(value='1920x1080.json')
         self._profile_cb  = ttk.Combobox(row2, textvariable=self._profile_var,
                                          font=CN_FONT, width=18, state='readonly')
         self._profile_cb.pack(side=tk.LEFT, padx=(4, 0))
@@ -202,7 +205,7 @@ class AutoRunApp:
         row3.pack(fill=tk.X, padx=8, pady=(2, 2))
         tk.Label(row3, text='客户端:', font=CN_FONT,
                  fg='#c9d1d9', bg='#1e1e1e', width=8, anchor='e').pack(side=tk.LEFT)
-        self._client_var = tk.StringVar(value='安卓模拟器')
+        self._client_var = tk.StringVar(value='PC客户端')
         self._client_cb  = ttk.Combobox(row3, textvariable=self._client_var,
                                         font=CN_FONT, width=16, state='readonly')
         self._client_cb['values'] = ['安卓模拟器', '安卓模拟器-ADB', 'PC客户端']
@@ -326,14 +329,16 @@ class AutoRunApp:
         from config_loader import list_windows
         titles = list_windows()
         self._window_cb['values'] = titles
-        # 优先预选第七史诗
-        for t in titles:
-            if '第七史诗' in t or '史诗' in t:
+        # Match localized PC titles without selecting this controller itself.
+        candidates = [t for t in titles if t != self.root.title()]
+        for t in candidates:
+            if any(name in t.casefold() for name in
+                   ('第七史诗', 'epic seven', 'epicseven', 'epic7')):
                 self._window_var.set(t)
                 break
         else:
-            if titles:
-                self._window_var.set(titles[0])
+            if candidates:
+                self._window_var.set(candidates[0])
 
     def _refresh_lang_profile(self):
         from config_loader import list_langs, list_profiles
@@ -371,6 +376,14 @@ class AutoRunApp:
     def _set_status(self, text: str, color: str = '#888888'):
         self._status_var.set(text)
         self._status_lbl.config(fg=color)
+
+    def _poll_stop_hotkey(self):
+        from battle_ai.windows import user32
+        if (self._thread is not None and self._thread.is_alive()
+                and not self._stop_event.is_set()
+                and user32.GetAsyncKeyState(0x77) & 0x8000):
+            self._on_stop()
+        self.root.after(100, self._poll_stop_hotkey)
 
     # ── 设置持久化 ────────────────────────────────────────────
     _SETTINGS_SAVE = os.path.join(_HERE, 'config', 'settings.json')
@@ -492,6 +505,8 @@ class AutoRunApp:
         cfg.load(window_title, profile_path, lang_path)
         if client == 'PC客户端':
             cfg.input_method = 'pc'
+            if not self._prepare_pc_window(window_title):
+                return
         elif is_adb:
             cfg.input_method    = 'adb'
             cfg.adb_device      = window_title
@@ -516,6 +531,8 @@ class AutoRunApp:
             self.log(f'预禁用配置：先手={self._first_ban_codes}  后手={self._second_ban_codes}', 'ok')
 
         self._stop_event.clear()
+        from battle_ai.executor import set_stop_event
+        set_stop_event(self._stop_event)
         self._start_btn.config(state=tk.DISABLED)
         self._stop_btn.config(state=tk.NORMAL)
         self._set_status('运行中...', '#3fb950')
@@ -545,109 +562,96 @@ class AutoRunApp:
         else:
             self._resize_btn.pack_forget()
 
+    def _profile_size(self):
+        profile_name = self._profile_var.get()
+        w, h = profile_name.replace('.json', '').split('x')
+        return int(w), int(h)
+
+    def _elevate_resize(self, hwnd, target_w, target_h):
+        import ctypes, os, json, tempfile
+        from battle_ai import executor as _ex
+        args_file = os.path.join(tempfile.gettempdir(), 'e7rta_resize_args.json')
+        with open(args_file, 'w', encoding='utf-8') as f:
+            json.dump({'hwnd': hwnd, 'w': target_w, 'h': target_h}, f)
+        if getattr(sys, 'frozen', False):
+            cmd_args = f'/c ""{sys.executable}" "--resize-admin" "{args_file}""'
+        else:
+            script = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                  'tools', 'resize_window_admin.py')
+            cmd_args = f'/c ""{sys.executable}" "{script}" "{args_file}""'
+        result = ctypes.windll.shell32.ShellExecuteW(
+            None, 'runas', 'cmd.exe', cmd_args, None, 1)
+        if result <= 32:
+            self._set_status('提权失败（已取消或被拒绝）', '#f85149')
+            return False
+        self._set_status(f'已提权，正在设置为 {target_w}×{target_h}…', '#d29922')
+
+        def _poll_result(hwnd=hwnd, tw=target_w, th=target_h):
+            time.sleep(4)
+            pw, ph, _ = _ex.client_physical_size(hwnd)
+            if abs(pw - tw) <= 4 and abs(ph - th) <= 4:
+                self.root.after(0, lambda: self._set_status(f'窗口已调整至 {tw}×{th}', '#3fb950'))
+            else:
+                self.root.after(0, lambda: self._set_status(f'实际尺寸 {pw}×{ph}（目标 {tw}×{th}）', '#d29922'))
+        threading.Thread(target=_poll_result, daemon=True).start()
+        return True
+
+    def _prepare_pc_window(self, window_title: str) -> bool:
+        """按屏幕可用区域准备游戏窗口，识别始终使用选定的 profile。"""
+        from battle_ai import executor as _ex
+        try:
+            target_w, target_h = self._profile_size()
+        except Exception:
+            self._set_status('无法解析分辨率', '#f85149')
+            return False
+        hwnd = _ex._find_main_hwnd(window_title)
+        if not hwnd:
+            self._set_status(f'未找到窗口: {window_title}', '#f85149')
+            return False
+        if _ex._u32.IsIconic(hwnd):
+            _ex._u32.ShowWindow(hwnd, 9)
+            time.sleep(0.3)
+        pw, ph, _ = _ex.client_physical_size(hwnd)
+        if (not _ex._u32.IsZoomed(hwnd)
+                and pw == target_w and ph == target_h):
+            self.log(f'电脑版窗口已是 {pw}×{ph}', 'ok')
+            return True
+        self.log(f'电脑版当前画面 {pw}×{ph}，按 {target_w}×{target_h} 配置适应屏幕', 'info')
+        ok, msg, err = _ex.resize_to_profile(hwnd, target_w, target_h)
+        self.log(msg, 'ok' if ok else 'error')
+        if ok:
+            return True
+        if err == 5:
+            self._set_status('游戏以管理员运行，请先点“设置窗口”并允许提权', '#f85149')
+        else:
+            self._set_status(msg, '#f85149')
+        return False
+
     def _on_resize_window(self):
         window_title = self._window_var.get().strip()
         if not window_title:
             self._set_status('请先选择游戏窗口！', '#f85149')
             return
-
-        profile_name = self._profile_var.get()
         try:
-            w, h = profile_name.replace('.json', '').split('x')
-            target_w, target_h = int(w), int(h)
+            target_w, target_h = self._profile_size()
         except Exception:
             self._set_status('无法解析分辨率', '#f85149')
             return
 
-        from battle_ai import executor as _ex  # 触发 SetProcessDpiAwareness(0)
-        import ctypes, time
-
-        u32 = _ex._u32
-        hwnd = u32.FindWindowW(None, window_title)
+        from battle_ai import executor as _ex
+        hwnd = _ex._find_main_hwnd(window_title)
         if not hwnd:
             self._set_status(f'未找到窗口: {window_title}', '#f85149')
             return
-
-        # Alt 键技巧强制激活窗口
-        u32.keybd_event(0x12, 0, 0, 0)
-        u32.SetForegroundWindow(hwnd)
-        u32.keybd_event(0x12, 0, 0x0002, 0)
-        time.sleep(0.3)
-
-        # 计算真实 DPI 缩放（GetDeviceCaps 返回物理像素，不受 DPI-unaware 影响）
-        hdc = ctypes.windll.gdi32.CreateDCW('DISPLAY', None, None, None)
-        phys_sw = ctypes.windll.gdi32.GetDeviceCaps(hdc, 118)  # DESKTOPHORZRES
-        ctypes.windll.gdi32.DeleteDC(hdc)
-        logical_sw = u32.GetSystemMetrics(0)
-        dpi_scale  = phys_sw / logical_sw if logical_sw else 1.0
-
-        # 检查物理目标是否超出屏幕
-        if target_w > phys_sw:
-            self._set_status(
-                f'{target_w}×{target_h} 超出物理屏幕宽度 {phys_sw}px，无法设置。', '#f85149')
+        ok, msg, err = _ex.resize_to_profile(hwnd, target_w, target_h)
+        if ok:
+            self._set_status(msg, '#3fb950')
+            self.log(msg, 'ok')
             return
-
-        # 测量窗口装饰（DPI-unaware 坐标系）
-        wr = _ex._RECT(); u32.GetWindowRect(hwnd, ctypes.byref(wr))
-        cr = _ex._RECT(); u32.GetClientRect(hwnd, ctypes.byref(cr))
-        os_deco_w = (wr.right - wr.left) - cr.right
-        os_deco_h = (wr.bottom - wr.top) - cr.bottom
-        drawn_h   = _ex._drawn_title_h(hwnd, cr.bottom)
-
-        # 物理目标 = profile 尺寸，DPI-unaware 目标 = profile ÷ dpi_scale（任意 DPI 通用）
-        virt_target_w = round(target_w / dpi_scale)
-        virt_target_h = round(target_h / dpi_scale)
-        outer_w = virt_target_w + os_deco_w
-        outer_h = virt_target_h + os_deco_h + drawn_h
-
-        import os, json, tempfile
-        ret = u32.SetWindowPos(hwnd, 0, 0, 0, outer_w, outer_h, 0x0002 | 0x0004)
-        err = ctypes.windll.kernel32.GetLastError()  # 紧跟 SetWindowPos，避免其他操作污染 error code
-        if ret:
-            # 修正 DPI 非整数缩放（如 1.5×）导致的 ±1 像素舍入误差
-            time.sleep(0.3)
-            cr2 = _ex._RECT(); u32.GetClientRect(hwnd, ctypes.byref(cr2))
-            diff_w = virt_target_w - cr2.right
-            diff_h = virt_target_h - cr2.bottom
-            if diff_w != 0 or diff_h != 0:
-                u32.SetWindowPos(hwnd, 0, 0, 0,
-                                 outer_w + diff_w, outer_h + diff_h,
-                                 0x0002 | 0x0004)
-            self._set_status(f'窗口已调整至 {target_w}×{target_h}', '#3fb950')
-            return
-        if err == 5:  # ERROR_ACCESS_DENIED：游戏以管理员权限运行，需提权
-            args_file = os.path.join(tempfile.gettempdir(), 'e7rta_resize_args.json')
-            with open(args_file, 'w', encoding='utf-8') as f:
-                json.dump({'hwnd': hwnd, 'w': target_w, 'h': target_h}, f)
-            if getattr(sys, 'frozen', False):
-                # PyInstaller 打包后：用自身 exe + --resize-admin 参数提权重启
-                cmd_args = f'/c ""{sys.executable}" "--resize-admin" "{args_file}""'
-            else:
-                # 开发环境：用独立脚本
-                script = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                      'tools', 'resize_window_admin.py')
-                cmd_args = f'/c ""{sys.executable}" "{script}" "{args_file}""'
-            result = ctypes.windll.shell32.ShellExecuteW(
-                None, 'runas', 'cmd.exe', cmd_args, None, 1)
-            if result > 32:
-                self._set_status(f'已提权，正在设置为 {target_w}×{target_h}…', '#d29922')
-                # 后台等 helper 完成后更新状态（helper 成功后 sleep 3 秒）
-                def _poll_result(hwnd=hwnd, tw=target_w, th=target_h,
-                                 ds=dpi_scale, vw=virt_target_w, vh=virt_target_h):
-                    time.sleep(4)
-                    cr_r = _ex._RECT()
-                    u32.GetClientRect(hwnd, ctypes.byref(cr_r))
-                    phys_w = round(cr_r.right * ds)
-                    phys_h = round(cr_r.bottom * ds)
-                    if phys_w == tw and phys_h == th:
-                        self._set_status(f'窗口已调整至 {tw}×{th}', '#3fb950')
-                    else:
-                        self._set_status(f'实际尺寸 {phys_w}×{phys_h}（目标 {tw}×{th}）', '#d29922')
-                threading.Thread(target=_poll_result, daemon=True).start()
-            else:
-                self._set_status(f'提权失败（已取消或被拒绝）', '#f85149')
+        if err == 5:
+            self._elevate_resize(hwnd, target_w, target_h)
         else:
-            self._set_status(f'调整失败 error={err}', '#f85149')
+            self._set_status(msg, '#f85149')
 
     # ── 等待辅助 ─────────────────────────────────────────────
     def _wait_for(self, check_fn, timeout: int, label: str) -> bool:
@@ -1012,72 +1016,15 @@ class _StopLoop(Exception):
 
 
 def _resize_admin_mode():
-    """以管理员权限执行窗口调整（PyInstaller 打包后由 --resize-admin 触发）。"""
-    import json, ctypes, ctypes.wintypes, time as _time
-
+    import json
+    from battle_ai.executor import resize_to_profile
     if len(sys.argv) < 3:
         sys.exit(1)
-    try:
-        with open(sys.argv[2], encoding='utf-8') as f:
-            args = json.load(f)
-    except Exception:
-        sys.exit(1)
-
-    try:
-        ctypes.windll.shcore.SetProcessDpiAwareness(0)
-    except Exception:
-        pass
-
-    class _RECT(ctypes.Structure):
-        _fields_ = [('left',ctypes.c_long),('top',ctypes.c_long),
-                    ('right',ctypes.c_long),('bottom',ctypes.c_long)]
-
-    hwnd     = args['hwnd']
-    target_w = args['w']
-    target_h = args['h']
-    u32 = ctypes.windll.user32
-    k32 = ctypes.windll.kernel32
-
-    if not u32.IsWindow(hwnd):
-        sys.exit(2)
-    if u32.IsIconic(hwnd):
-        u32.ShowWindow(hwnd, 9)
-        _time.sleep(0.5)
-
-    wr = _RECT(); u32.GetWindowRect(hwnd, ctypes.byref(wr))
-    cr = _RECT(); u32.GetClientRect(hwnd, ctypes.byref(cr))
-    if cr.right == 0:
-        sys.exit(5)
-
-    hdc = ctypes.windll.gdi32.CreateDCW('DISPLAY', None, None, None)
-    phys_sw = ctypes.windll.gdi32.GetDeviceCaps(hdc, 118)
-    ctypes.windll.gdi32.DeleteDC(hdc)
-    logical_sw = u32.GetSystemMetrics(0)
-    dpi_scale  = phys_sw / logical_sw if logical_sw else 1.0
-
-    virt_w = round(target_w / dpi_scale)
-    virt_h = round(target_h / dpi_scale)
-    deco_w = (wr.right - wr.left) - cr.right
-    deco_h = (wr.bottom - wr.top) - cr.bottom
-
-    u32.keybd_event(0x12, 0, 0, 0)
-    u32.SetForegroundWindow(hwnd)
-    u32.keybd_event(0x12, 0, 0x0002, 0)
-    _time.sleep(0.3)
-
-    ret = u32.SetWindowPos(hwnd, 0, 0, 0, virt_w + deco_w, virt_h + deco_h, 0x0002 | 0x0004)
-    if not ret:
-        sys.exit(3)
-
-    _time.sleep(0.3)
-    cr2 = _RECT(); u32.GetClientRect(hwnd, ctypes.byref(cr2))
-    diff_w = virt_w - cr2.right
-    diff_h = virt_h - cr2.bottom
-    if diff_w != 0 or diff_h != 0:
-        u32.SetWindowPos(hwnd, 0, 0, 0,
-                         virt_w + deco_w + diff_w, virt_h + deco_h + diff_h,
-                         0x0002 | 0x0004)
-    sys.exit(0)
+    with open(sys.argv[2], encoding='utf-8') as f:
+        args = json.load(f)
+    ok, message, _ = resize_to_profile(args['hwnd'], args['w'], args['h'])
+    print(message)
+    sys.exit(0 if ok else 3)
 
 
 if __name__ == '__main__':

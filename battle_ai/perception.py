@@ -1,3 +1,4 @@
+from battle_ai.windows import physical_pixels
 import ctypes
 import io
 import json
@@ -43,23 +44,11 @@ def _lang(key: str, default: str = '') -> str:
 
 
 def _get_window_region():
-    """返回游戏画面屏幕坐标 (left, top, width, height)。
-    用 GetWindowRect 定位窗口（参考 get_coords.py 思路），
-    再用 ClientToScreen + drawn_title_h 算出游戏区域偏移。
-    """
-    from battle_ai.executor import (get_window_title, _find_main_hwnd,
-                                     _drawn_title_h, _get_expected_resolution)
+    from battle_ai.executor import get_window_title, _find_main_hwnd, _content_metrics
     hwnd = _find_main_hwnd(get_window_title())
     if not hwnd:
-        raise RuntimeError("找不到窗口，请确认游戏已打开")
-
-    ew, eh = _get_expected_resolution()
-    pt = _POINT(0, 0)
-    _u32.ClientToScreen(hwnd, ctypes.byref(pt))
-    rc = _RECT()
-    _u32.GetClientRect(hwnd, ctypes.byref(rc))
-    tab_bar = _drawn_title_h(hwnd, rc.bottom)
-    return pt.x, pt.y + tab_bar, ew, eh
+        raise RuntimeError('找不到游戏窗口')
+    return _content_metrics(hwnd)
 
 
 def _capture_adb() -> np.ndarray:
@@ -86,69 +75,23 @@ def _capture_adb() -> np.ndarray:
 
 
 def capture() -> np.ndarray:
-    """截取游戏画面，返回 numpy RGB 数组（profile 分辨率 ew×eh）。
-    Win32 返回物理坐标，PIL grab 用逻辑坐标，用 dpi_scale 换算后再裁剪。
-    """
+    """截取游戏画面，返回 numpy RGB 数组（profile 分辨率 ew×eh）。"""
     from battle_ai.executor import _is_adb
     if _is_adb():
         return _capture_adb()
 
-    from PIL import ImageGrab, Image as PILImage
-    from battle_ai.executor import get_window_title, _find_main_hwnd, _get_expected_resolution
-
-    hwnd = _find_main_hwnd(get_window_title())
+    from PIL import ImageGrab
+    from battle_ai.executor import _get_expected_resolution
+    physical_pixels()
+    ox, oy, cw, ch = _get_window_region()
     ew, eh = _get_expected_resolution()
-
-    wr = _RECT(); _u32.GetWindowRect(hwnd, ctypes.byref(wr))
-
-    # 找最大子窗口（游戏渲染区）
-    best_area = [0]; best_child = [0]; best_cw = [0]; best_ch = [0]
-    _PROC = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
-    def _cb(child, _):
-        cr = _RECT(); _u32.GetClientRect(child, ctypes.byref(cr))
-        area = cr.right * cr.bottom
-        if area > best_area[0]:
-            best_area[0] = area; best_child[0] = child
-            best_cw[0] = cr.right; best_ch[0] = cr.bottom
-        return True
-    _u32.EnumChildWindows(hwnd, _PROC(_cb), 0)
-
-    if best_child[0]:
-        cpt = _POINT(0, 0)
-        _u32.ClientToScreen(best_child[0], ctypes.byref(cpt))
-        gx_phys = cpt.x - wr.left
-        gy_phys = cpt.y - wr.top
-        gw_phys = best_cw[0]
-        gh_phys = best_ch[0]
-        # dpi_scale = 物理像素 / 逻辑像素（100% DPI → 1.0，150% DPI → 1.5）
-        dpi_scale = best_cw[0] / ew if best_cw[0] >= ew else 1.0
-    else:
-        from battle_ai.executor import _drawn_title_h
-        pt = _POINT(0, 0); _u32.ClientToScreen(hwnd, ctypes.byref(pt))
-        rc = _RECT(); _u32.GetClientRect(hwnd, ctypes.byref(rc))
-        drawn = _drawn_title_h(hwnd, rc.bottom)
-        gx_phys = pt.x - wr.left
-        gy_phys = (pt.y - wr.top) + drawn
-        gw_phys, gh_phys = ew, eh
-        dpi_scale = 1.0
-
-    # PIL grab 永远用逻辑坐标 → 物理坐标 ÷ dpi_scale
-    s = dpi_scale
-    bbox = (int(wr.left/s), int(wr.top/s), int(wr.right/s), int(wr.bottom/s))
-    gx = int(gx_phys / s)
-    gy = int(gy_phys / s)
-    gw = int(gw_phys / s)   # = ew（逻辑游戏宽度）
-    gh = int(gh_phys / s)   # = eh（逻辑游戏高度）
-
-    full = ImageGrab.grab(bbox=bbox)
-    arr  = np.array(full)
-    game = arr[gy : gy + gh, gx : gx + gw]
-
-    if game.shape[1] != ew or game.shape[0] != eh:
-        pil = PILImage.fromarray(game)
-        pil = pil.resize((ew, eh), PILImage.LANCZOS)
-        return np.array(pil)
-    return game
+    if abs(cw / ch - ew / eh) > 0.01:
+        raise RuntimeError('游戏画面比例与坐标配置不符，请先设置窗口')
+    # all_screens is essential for a monitor to the left of the primary display.
+    game = ImageGrab.grab(bbox=(ox, oy, ox + cw, oy + ch), all_screens=True).convert('RGB')
+    if game.size != (ew, eh):
+        game = game.resize((ew, eh), Image.Resampling.LANCZOS)
+    return np.array(game)
 
 
 # ── 我的回合检测（亮度，向后兼容保留）────────────────────────

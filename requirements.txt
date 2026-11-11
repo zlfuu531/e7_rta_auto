@@ -1,0 +1,9 @@
+# Tested on Windows x64 / Python 3.12. The PyPI Windows torch build runs on CPU.
+torch==2.15.0
+numpy==2.5.4
+Pillow==13.0.0
+opencv-python==5.0.0.93
+PyAutoGUI==0.9.54
+ddddocr==1.6.1
+onnxruntime==1.31.1
+zhconv==1.4.3

@@ -21,3 +21,12 @@ __pycache__/
 
 # 模型权重（体积大，按需决定是否上传）
 # draft_transformer.pth
+
+# Local environments, diagnostics and personal match history
+.venv/
+py312/
+diagnostics/
+backups/
+data/
+startup_error.log
+config/settings.local.json
